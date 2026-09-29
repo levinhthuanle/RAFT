@@ -81,14 +81,22 @@ class RaftNode:
             self._become_leader()
 
     async def _send_vote_request(self, peer_url: str) -> dict:
-        payload = {"term": self.current_term, "candidate_id": self.node_id}
+        last_log_index = len(self.log) - 1
+        last_log_term = self.log[last_log_index]["term"] if last_log_index >= 0 else 0
+        payload = {
+            "term": self.current_term,
+            "candidate_id": self.node_id,
+            "last_log_index": last_log_index,
+            "last_log_term": last_log_term,
+        }
         async with httpx.AsyncClient() as client:
             resp = await client.post(f"{peer_url}/request_vote", json=payload, timeout=0.1)
             return resp.json()
 
     # --- Vote Handler ---
 
-    def handle_vote_request(self, term: int, candidate_id: int) -> dict:
+    def handle_vote_request(self, term: int, candidate_id: int,
+                             last_log_index: int, last_log_term: int) -> dict:
         if term < self.current_term:
             return {"term": self.current_term, "vote_granted": False}
 
@@ -96,13 +104,23 @@ class RaftNode:
             self._become_follower(term)
 
         can_vote = self.voted_for is None or self.voted_for == candidate_id
-        if can_vote:
-            self.voted_for = candidate_id
-            self.reset_election_timer()
-            print(f"[Node {self.node_id}] Voted for node {candidate_id} in term {term}")
-            return {"term": self.current_term, "vote_granted": True}
+        if not can_vote:
+            return {"term": self.current_term, "vote_granted": False}
 
-        return {"term": self.current_term, "vote_granted": False}
+        # Log up-to-date check (Raft paper §5.4.1)
+        my_last_index = len(self.log) - 1
+        my_last_term = self.log[my_last_index]["term"] if my_last_index >= 0 else 0
+        candidate_log_ok = (
+            last_log_term > my_last_term
+            or (last_log_term == my_last_term and last_log_index >= my_last_index)
+        )
+        if not candidate_log_ok:
+            return {"term": self.current_term, "vote_granted": False}
+
+        self.voted_for = candidate_id
+        self.reset_election_timer()
+        print(f"[Node {self.node_id}] Voted for node {candidate_id} in term {term}")
+        return {"term": self.current_term, "vote_granted": True}
 
     # --- Leader ---
 

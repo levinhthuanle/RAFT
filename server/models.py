@@ -4,6 +4,8 @@ from pydantic import BaseModel
 class VoteRequest(BaseModel):
     term: int
     candidate_id: int
+    last_log_index: int
+    last_log_term: int
 
 
 class VoteResponse(BaseModel):

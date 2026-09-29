@@ -28,7 +28,7 @@ def create_app(node_id: int) -> FastAPI:
 
     @app.post("/request_vote", response_model=VoteResponse)
     def request_vote(req: VoteRequest):
-        result = node.handle_vote_request(req.term, req.candidate_id)
+        result = node.handle_vote_request(req.term, req.candidate_id, req.last_log_index, req.last_log_term)
         return result
 
     @app.post("/append_entries", response_model=AppendEntriesResponse)
