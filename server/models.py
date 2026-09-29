@@ -32,6 +32,18 @@ class AppendEntriesResponse(BaseModel):
     success: bool
 
 
+class InstallSnapshotRequest(BaseModel):
+    term: int
+    leader_id: int
+    last_included_index: int
+    last_included_term: int
+    store: dict[str, str]
+
+
+class InstallSnapshotResponse(BaseModel):
+    term: int
+
+
 class ClientCommand(BaseModel):
     command: str
 

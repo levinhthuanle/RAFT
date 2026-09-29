@@ -1,0 +1,98 @@
+services:
+
+  # ── Postgres databases ────────────────────────────────────────────
+  db1:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: raft1
+      POSTGRES_USER: raft
+      POSTGRES_PASSWORD: raft
+    volumes:
+      - db1_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U raft -d raft1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  db2:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: raft2
+      POSTGRES_USER: raft
+      POSTGRES_PASSWORD: raft
+    volumes:
+      - db2_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U raft -d raft2"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  db3:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: raft3
+      POSTGRES_USER: raft
+      POSTGRES_PASSWORD: raft
+    volumes:
+      - db3_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U raft -d raft3"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ── Raft nodes ────────────────────────────────────────────────────
+  node1:
+    build: .
+    command: python main.py --node-id 1 --port 8000 --data-dir /data
+    ports:
+      - "8001:8000"
+    environment:
+      NODE_ID: "1"
+      DATABASE_URL: "postgresql://raft:raft@db1:5432/raft1"
+      PEERS: "http://node1:8000,http://node2:8000,http://node3:8000"
+    volumes:
+      - node1_data:/data
+    depends_on:
+      db1:
+        condition: service_healthy
+
+  node2:
+    build: .
+    command: python main.py --node-id 2 --port 8000 --data-dir /data
+    ports:
+      - "8002:8000"
+    environment:
+      NODE_ID: "2"
+      DATABASE_URL: "postgresql://raft:raft@db2:5432/raft2"
+      PEERS: "http://node1:8000,http://node2:8000,http://node3:8000"
+    volumes:
+      - node2_data:/data
+    depends_on:
+      db2:
+        condition: service_healthy
+
+  node3:
+    build: .
+    command: python main.py --node-id 3 --port 8000 --data-dir /data
+    ports:
+      - "8003:8000"
+    environment:
+      NODE_ID: "3"
+      DATABASE_URL: "postgresql://raft:raft@db3:5432/raft3"
+      PEERS: "http://node1:8000,http://node2:8000,http://node3:8000"
+    volumes:
+      - node3_data:/data
+    depends_on:
+      db3:
+        condition: service_healthy
+
+volumes:
+  db1_data:
+  db2_data:
+  db3_data:
+  node1_data:
+  node2_data:
+  node3_data:

@@ -11,6 +11,7 @@ trap cleanup EXIT
 
 cd "$(dirname "$0")/../server"
 
+mkdir -p data
 PIDS=()
 for i in $(seq 1 $NUM_NODES); do
     PORT=$((BASE_PORT + i))

@@ -1,18 +1,21 @@
 import asyncio
+import os
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from raft import RaftNode
 from models import (
     VoteRequest, VoteResponse,
     AppendEntriesRequest, AppendEntriesResponse,
+    InstallSnapshotRequest, InstallSnapshotResponse,
     ClientCommand, ClientResponse,
 )
-from const import NODES
+from const import get_peers
 
 
-def create_app(node_id: int) -> FastAPI:
-    peers = {nid: url for nid, url in NODES.items() if nid != node_id}
-    node = RaftNode(node_id, peers)
+def create_app(node_id: int, data_dir: str = "data") -> FastAPI:
+    peers = get_peers(node_id)
+    database_url = os.getenv("DATABASE_URL")
+    node = RaftNode(node_id, peers, data_dir=data_dir, database_url=database_url)
     print(node)
 
     @asynccontextmanager
@@ -40,6 +43,15 @@ def create_app(node_id: int) -> FastAPI:
             req.prev_log_term,
             [e.model_dump() for e in req.entries],
             req.leader_commit,
+        )
+        return result
+
+    @app.post("/install_snapshot", response_model=InstallSnapshotResponse)
+    def install_snapshot(req: InstallSnapshotRequest):
+        result = node.handle_install_snapshot(
+            req.term, req.leader_id,
+            req.last_included_index, req.last_included_term,
+            req.store,
         )
         return result
 
