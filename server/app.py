@@ -5,6 +5,8 @@ from contextlib import asynccontextmanager
 
 import grpc
 from fastapi import FastAPI
+from fastapi.responses import PlainTextResponse
+from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 
 import raft_pb2_grpc
 from grpc_servicer import RaftServicer
@@ -42,6 +44,11 @@ def create_app(node_id: int, data_dir: str = "data") -> FastAPI:
     @app.get("/health")
     def health():
         return node.get_status()
+
+    @app.get("/metrics", response_class=PlainTextResponse)
+    def metrics():
+        node._update_metrics()
+        return PlainTextResponse(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
     @app.post("/command", response_model=ClientResponse)
     async def command(req: ClientCommand):

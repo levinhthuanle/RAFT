@@ -1,5 +1,6 @@
-fastapi 
-uvicorn 
+fastapi
+uvicorn
 httpx
 grpcio
 grpcio-tools
+prometheus-client

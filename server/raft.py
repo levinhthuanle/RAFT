@@ -6,7 +6,17 @@ import random
 import grpc
 import raft_pb2
 import raft_pb2_grpc
+from prometheus_client import Counter, Gauge
 from state_machine import StateMachine
+
+# --- Prometheus metrics (labeled by node_id) ---
+_TERM         = Gauge("raft_current_term",        "Current Raft term",          ["node_id"])
+_IS_LEADER    = Gauge("raft_is_leader",           "1 if this node is leader",   ["node_id"])
+_COMMIT_INDEX = Gauge("raft_commit_index",        "Commit index",               ["node_id"])
+_LOG_LENGTH   = Gauge("raft_log_length",          "Total log length",           ["node_id"])
+_ELECTIONS    = Counter("raft_elections_total",   "Elections started",          ["node_id"])
+_AE_RECV      = Counter("raft_append_entries_recv_total", "AppendEntries received", ["node_id"])
+_VOTES_GRANTED = Counter("raft_votes_granted_total", "Votes granted",           ["node_id"])
 
 SNAPSHOT_THRESHOLD = 50
 
@@ -79,6 +89,13 @@ class RaftNode:
 
     def _grpc_addr(self, peer_id: int) -> str:
         return self.grpc_peers.get(peer_id, "")
+
+    def _update_metrics(self):
+        nid = str(self.node_id)
+        _TERM.labels(nid).set(self.current_term)
+        _IS_LEADER.labels(nid).set(1 if self.state == "leader" else 0)
+        _COMMIT_INDEX.labels(nid).set(self.commit_index)
+        _LOG_LENGTH.labels(nid).set(self._log_len())
 
     def reset_election_timer(self):
         self.last_heartbeat = self._loop.time()
@@ -171,6 +188,7 @@ class RaftNode:
         self.voted_for = self.node_id
         self._save_persistent_state()
         votes = 1
+        _ELECTIONS.labels(str(self.node_id)).inc()
         print(f"[Node {self.node_id}] Starting election for term {self.current_term}")
 
         tasks = [self._send_vote_request(peer_id, peer_url) for peer_id, peer_url in self.peers.items()]
@@ -236,6 +254,7 @@ class RaftNode:
         self.voted_for = candidate_id
         self._save_persistent_state()
         self.reset_election_timer()
+        _VOTES_GRANTED.labels(str(self.node_id)).inc()
         print(f"[Node {self.node_id}] Voted for node {candidate_id} in term {term}")
         return {"term": self.current_term, "vote_granted": True}
 
@@ -244,6 +263,7 @@ class RaftNode:
     def _become_leader(self):
         self.state = "leader"
         print(f"[Node {self.node_id}] Became LEADER for term {self.current_term}")
+        self._update_metrics()
         last = self._log_len() - 1
         for peer_id in self.peers:
             self.next_index[peer_id] = last + 1
@@ -358,6 +378,7 @@ class RaftNode:
             cmd = self.log[pos]["command"]
             self.state_machine.apply(cmd)
             print(f"[Node {self.node_id}] Applied [{self.last_applied}]: {cmd}")
+        self._update_metrics()
         self._save_snapshot()
 
     # --- AppendEntries Handler ---
@@ -371,6 +392,7 @@ class RaftNode:
             self._become_follower(term)
 
         self.reset_election_timer()
+        _AE_RECV.labels(str(self.node_id)).inc()
 
         # Log consistency check
         if prev_log_index >= 0:
@@ -473,4 +495,5 @@ class RaftNode:
         self.voted_for = None
         self._save_persistent_state()
         self.reset_election_timer()
+        self._update_metrics()
         print(f"[Node {self.node_id}] Became follower for term {term}")

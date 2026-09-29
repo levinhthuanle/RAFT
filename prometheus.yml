@@ -1,0 +1,12 @@
+global:
+  scrape_interval: 2s
+  evaluation_interval: 2s
+  scrape_timeout: 1s
+
+scrape_configs:
+  - job_name: raft
+    static_configs:
+      - targets:
+          - node1:8000
+          - node2:8000
+          - node3:8000
