@@ -3,7 +3,9 @@ import json
 import os
 import pathlib
 import random
-import httpx
+import grpc
+import raft_pb2
+import raft_pb2_grpc
 from state_machine import StateMachine
 
 SNAPSHOT_THRESHOLD = 50
@@ -13,9 +15,10 @@ class RaftNode:
     def __str__(self):
         return f"RaftNode(id={self.node_id}, state={self.state}, term={self.current_term}, peers={list(self.peers.keys())})"
 
-    def __init__(self, node_id, peers, data_dir="data", database_url=None):
+    def __init__(self, node_id, peers, grpc_peers=None, data_dir="data", database_url=None):
         self.node_id = node_id
         self.peers = peers
+        self.grpc_peers = grpc_peers or {}
 
         self.state = "follower"
         self.current_term = 0
@@ -73,6 +76,9 @@ class RaftNode:
             "commit_index": self.commit_index,
             "snapshot_last_index": self.snapshot_last_index,
         }
+
+    def _grpc_addr(self, peer_id: int) -> str:
+        return self.grpc_peers.get(peer_id, "")
 
     def reset_election_timer(self):
         self.last_heartbeat = self._loop.time()
@@ -167,7 +173,7 @@ class RaftNode:
         votes = 1
         print(f"[Node {self.node_id}] Starting election for term {self.current_term}")
 
-        tasks = [self._send_vote_request(peer_url) for peer_url in self.peers.values()]
+        tasks = [self._send_vote_request(peer_id, peer_url) for peer_id, peer_url in self.peers.items()]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
         for result in results:
@@ -183,18 +189,26 @@ class RaftNode:
         if self.state == "candidate" and votes >= majority:
             self._become_leader()
 
-    async def _send_vote_request(self, peer_url: str) -> dict:
+    async def _send_vote_request(self, peer_id: int, peer_url: str) -> dict:
         last_log_index = self._log_len() - 1
         last_log_term = self._log_term_at(last_log_index)
-        payload = {
-            "term": self.current_term,
-            "candidate_id": self.node_id,
-            "last_log_index": last_log_index,
-            "last_log_term": last_log_term,
-        }
-        async with httpx.AsyncClient() as client:
-            resp = await client.post(f"{peer_url}/request_vote", json=payload, timeout=0.1)
-            return resp.json()
+        addr = self._grpc_addr(peer_id)
+        if not addr:
+            return {}
+
+        def call():
+            with grpc.insecure_channel(addr) as ch:
+                stub = raft_pb2_grpc.RaftServiceStub(ch)
+                req = raft_pb2.VoteRequest(
+                    term=self.current_term,
+                    candidate_id=self.node_id,
+                    last_log_index=last_log_index,
+                    last_log_term=last_log_term,
+                )
+                resp = stub.RequestVote(req, timeout=0.1)
+                return {"term": resp.term, "vote_granted": resp.vote_granted}
+
+        return await asyncio.get_event_loop().run_in_executor(None, call)
 
     # --- Vote Handler ---
 
@@ -254,23 +268,35 @@ class RaftNode:
 
         prev_index = ni - 1
         prev_term = self._log_term_at(prev_index)
-        entries = [{"term": e["term"], "command": e["command"]} for e in self.log[self._log_pos(ni):]]
-        payload = {
-            "term": self.current_term,
-            "leader_id": self.node_id,
-            "prev_log_index": prev_index,
-            "prev_log_term": prev_term,
-            "entries": entries,
-            "leader_commit": self.commit_index,
-        }
+        entries_data = [{"term": e["term"], "command": e["command"]} for e in self.log[self._log_pos(ni):]]
+        addr = self._grpc_addr(peer_id)
+        if not addr:
+            return
+
+        current_term = self.current_term
+        leader_commit = self.commit_index
+
+        def call():
+            with grpc.insecure_channel(addr) as ch:
+                stub = raft_pb2_grpc.RaftServiceStub(ch)
+                entries_pb = [raft_pb2.LogEntry(term=e["term"], command=e["command"]) for e in entries_data]
+                req = raft_pb2.AppendEntriesRequest(
+                    term=current_term,
+                    leader_id=self.node_id,
+                    prev_log_index=prev_index,
+                    prev_log_term=prev_term,
+                    entries=entries_pb,
+                    leader_commit=leader_commit,
+                )
+                resp = stub.AppendEntries(req, timeout=0.1)
+                return {"term": resp.term, "success": resp.success}
+
         try:
-            async with httpx.AsyncClient() as client:
-                resp = await client.post(f"{peer_url}/append_entries", json=payload, timeout=0.1)
-                data = resp.json()
+            data = await asyncio.get_event_loop().run_in_executor(None, call)
             if data["term"] > self.current_term:
                 self._become_follower(data["term"])
             elif data["success"]:
-                self.match_index[peer_id] = prev_index + len(entries)
+                self.match_index[peer_id] = prev_index + len(entries_data)
                 self.next_index[peer_id] = self.match_index[peer_id] + 1
                 self._try_commit()
             else:
@@ -283,17 +309,28 @@ class RaftNode:
             return
         with open(self._snapshot_path) as f:
             snap = json.load(f)
-        payload = {
-            "term": self.current_term,
-            "leader_id": self.node_id,
-            "last_included_index": snap["last_included_index"],
-            "last_included_term": snap["last_included_term"],
-            "store": snap["store"],
-        }
+
+        addr = self._grpc_addr(peer_id)
+        if not addr:
+            return
+
+        current_term = self.current_term
+
+        def call():
+            with grpc.insecure_channel(addr) as ch:
+                stub = raft_pb2_grpc.RaftServiceStub(ch)
+                req = raft_pb2.InstallSnapshotRequest(
+                    term=current_term,
+                    leader_id=self.node_id,
+                    last_included_index=snap["last_included_index"],
+                    last_included_term=snap["last_included_term"],
+                    store=snap["store"],
+                )
+                resp = stub.InstallSnapshot(req, timeout=2.0)
+                return {"term": resp.term}
+
         try:
-            async with httpx.AsyncClient() as client:
-                resp = await client.post(f"{peer_url}/install_snapshot", json=payload, timeout=2.0)
-                data = resp.json()
+            data = await asyncio.get_event_loop().run_in_executor(None, call)
             if data.get("term", 0) > self.current_term:
                 self._become_follower(data["term"])
             else:
