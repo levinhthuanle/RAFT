@@ -2,7 +2,11 @@ import asyncio
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from raft import RaftNode
-from models import VoteRequest, VoteResponse, AppendEntriesRequest, AppendEntriesResponse
+from models import (
+    VoteRequest, VoteResponse,
+    AppendEntriesRequest, AppendEntriesResponse,
+    ClientCommand, ClientResponse,
+)
 from const import NODES
 
 
@@ -29,7 +33,21 @@ def create_app(node_id: int) -> FastAPI:
 
     @app.post("/append_entries", response_model=AppendEntriesResponse)
     def append_entries(req: AppendEntriesRequest):
-        result = node.handle_append_entries(req.term, req.leader_id)
+        result = node.handle_append_entries(
+            req.term,
+            req.leader_id,
+            req.prev_log_index,
+            req.prev_log_term,
+            [e.model_dump() for e in req.entries],
+            req.leader_commit,
+        )
         return result
+
+    @app.post("/command", response_model=ClientResponse)
+    async def command(req: ClientCommand):
+        result = await node.append_command(req.command)
+        if result is None:
+            return {"success": False, "leader_id": node.voted_for}
+        return {"success": True, "result": result}
 
     return app
